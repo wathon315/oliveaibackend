@@ -258,11 +258,15 @@ mongoose.connect(MONGODB_URI)
 
 // ===== EXPRESS MIDDLEWARE =====
 app.use(cors({
-  origin: 'https://wathon315.github.io', // Explicitly allow your frontend
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+    origin: [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'https://wathon315.github.io',  
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
@@ -1208,7 +1212,15 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
 
 // Serve the main HTML file
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.json({ 
+        message: 'Olive AI API Server',
+        status: 'Running',
+        endpoints: {
+            health: '/api/health',
+            analyze: '/api/analyze',
+            auth: '/api/auth/*'
+        }
+    });
 });
 
 // Static files
