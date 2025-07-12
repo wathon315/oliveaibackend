@@ -258,10 +258,11 @@ mongoose.connect(MONGODB_URI)
 
 // ===== EXPRESS MIDDLEWARE =====
 app.use(cors({
-    origin: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+  origin: 'https://wathon315.github.io', // Explicitly allow your frontend
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
