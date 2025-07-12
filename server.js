@@ -261,7 +261,7 @@ app.use(cors({
     origin: [
         'http://localhost:3000',
         'http://localhost:5173',
-        'https://wathon315.github.io',  
+        'https://wathon315.github.io/oliveai/',  
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
