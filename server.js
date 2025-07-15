@@ -353,6 +353,7 @@ mongoose.connect(MONGODB_URI)
 });
 
 // ===== EXPRESS MIDDLEWARE =====
+// Updated CORS configuration with proper handling
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
@@ -370,8 +371,6 @@ app.use(cors({
         if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
-            // For development, you might want to allow all origins
-            // callback(null, true);
             callback(new Error('Not allowed by CORS'));
         }
     },
@@ -382,8 +381,23 @@ app.use(cors({
     maxAge: 86400 // 24 hours
 }));
 
+// Handle preflight requests
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', req.headers.origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.sendStatus(200);
+});
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
+
+// Request logging for debugging
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
+});
 
 // ===== MULTER SETUP =====
 const storage = multer.diskStorage({
@@ -837,6 +851,43 @@ function getMockEnvironmentalData() {
   };
 }
 
+// ===== API ROUTES =====
+
+app.get('/api/health', async (req, res) => {
+  try {
+    // Get feedback statistics for health check
+    const feedbackCount = await Feedback.countDocuments();
+    const recentFeedbackCount = await Feedback.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+    });
+    
+    res.json({ 
+      status: 'healthy', 
+      message: '✅ Olive AI Server is running',
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      vision: visionClient ? 'available' : 'mock mode',
+      feedback: {
+        total: feedbackCount,
+        last24Hours: recentFeedbackCount
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.json({ 
+      status: 'healthy', 
+      message: '✅ Olive AI Server is running',
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      vision: visionClient ? 'available' : 'mock mode',
+      feedback: {
+        total: 0,
+        last24Hours: 0,
+        error: 'Unable to fetch feedback stats'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // ===== AUTH ROUTES =====
 
 app.post('/api/auth/register', async (req, res) => {
@@ -1051,18 +1102,6 @@ app.get('/api/auth/history', authenticateToken, async (req, res) => {
   }
 });
 
-// ===== API ROUTES =====
-
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    message: '✅ Olive AI Server is running',
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    vision: visionClient ? 'available' : 'mock mode',
-    timestamp: new Date().toISOString()
-  });
-});
-
 // ===== MAIN ANALYSIS ENDPOINT =====
 app.post('/api/analyze', optionalAuth, upload.single('image'), async (req, res) => {
     console.log('\n🔍 ========== NEW ANALYSIS REQUEST ==========');
@@ -1275,6 +1314,308 @@ app.get('/api/analysis/:analysisId', optionalAuth, async (req, res) => {
     }
 });
 
+// ===== FEEDBACK ROUTES =====
+
+// Submit feedback - MUST BE BEFORE 404 HANDLER
+app.post('/api/feedback', optionalAuth, async (req, res) => {
+  try {
+    console.log('📝 New feedback submission received');
+    console.log('📦 Request body:', req.body);
+    
+    const { name, email, rating, category, message } = req.body;
+
+    // Validation
+    if (!rating || !category || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating, category, and message are required'
+      });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating must be between 1 and 5'
+      });
+    }
+
+    if (message.length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message must be at least 10 characters long'
+      });
+    }
+
+    if (message.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message must not exceed 1000 characters'
+      });
+    }
+
+    // Create feedback document
+    const feedbackData = {
+      userId: req.user ? req.user._id : null,
+      name: name || (req.user ? req.user.name : 'Anonymous'),
+      email: email || (req.user ? req.user.email : null),
+      rating: parseInt(rating),
+      category,
+      message: message.trim(),
+      userAgent: req.headers['user-agent'] || null,
+      ipAddress: req.ip || req.connection.remoteAddress || null
+    };
+
+    const feedback = new Feedback(feedbackData);
+    await feedback.save();
+
+    console.log(`✅ Feedback saved: ${feedback.feedbackId} - Rating: ${rating}/5 - Category: ${category}`);
+
+    res.json({
+      success: true,
+      message: 'Thank you for your feedback! We appreciate your input.',
+      feedbackId: feedback.feedbackId
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback submission error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to submit feedback. Please try again.'
+    });
+  }
+});
+
+// Get user's feedback history (authenticated users only)
+app.get('/api/feedback/history', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const feedbacks = await Feedback.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('feedbackId rating category message status createdAt');
+
+    const total = await Feedback.countDocuments({ userId: req.user._id });
+
+    res.json({
+      success: true,
+      feedbacks,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback history error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch feedback history'
+    });
+  }
+});
+
+// Get feedback statistics
+app.get('/api/feedback/stats', async (req, res) => {
+  try {
+    const totalFeedbacks = await Feedback.countDocuments();
+    
+    const ratingStats = await Feedback.aggregate([
+      {
+        $group: {
+          _id: null,
+          averageRating: { $avg: '$rating' },
+          totalRatings: { $sum: 1 },
+          rating1: { $sum: { $cond: [{ $eq: ['$rating', 1] }, 1, 0] } },
+          rating2: { $sum: { $cond: [{ $eq: ['$rating', 2] }, 1, 0] } },
+          rating3: { $sum: { $cond: [{ $eq: ['$rating', 3] }, 1, 0] } },
+          rating4: { $sum: { $cond: [{ $eq: ['$rating', 4] }, 1, 0] } },
+          rating5: { $sum: { $cond: [{ $eq: ['$rating', 5] }, 1, 0] } }
+        }
+      }
+    ]);
+
+    const categoryStats = await Feedback.aggregate([
+      {
+        $group: {
+          _id: '$category',
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      }
+    ]);
+
+    const recentFeedbacks = await Feedback.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('name rating category message createdAt');
+
+    const statusStats = await Feedback.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      statistics: {
+        total: totalFeedbacks,
+        averageRating: ratingStats[0]?.averageRating?.toFixed(2) || 0,
+        ratingDistribution: {
+          1: ratingStats[0]?.rating1 || 0,
+          2: ratingStats[0]?.rating2 || 0,
+          3: ratingStats[0]?.rating3 || 0,
+          4: ratingStats[0]?.rating4 || 0,
+          5: ratingStats[0]?.rating5 || 0
+        },
+        categoryDistribution: categoryStats.reduce((acc, cat) => {
+          acc[cat._id] = cat.count;
+          return acc;
+        }, {}),
+        statusDistribution: statusStats.reduce((acc, status) => {
+          acc[status._id] = status.count;
+          return acc;
+        }, {}),
+        recentFeedbacks
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch feedback statistics'
+    });
+  }
+});
+
+// Get single feedback by ID
+app.get('/api/feedback/:feedbackId', optionalAuth, async (req, res) => {
+  try {
+    const query = { feedbackId: req.params.feedbackId };
+    
+    // Only allow users to see their own feedback unless they're admin
+    if (req.user && !req.user.isAdmin) {
+      query.userId = req.user._id;
+    }
+
+    const feedback = await Feedback.findOne(query);
+
+    if (!feedback) {
+      return res.status(404).json({
+        success: false,
+        error: 'Feedback not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      feedback
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback fetch error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch feedback'
+    });
+  }
+});
+
+// Update feedback status
+app.put('/api/feedback/:feedbackId/status', authenticateToken, async (req, res) => {
+  try {
+    const { status, adminNotes } = req.body;
+
+    const validStatuses = ['pending', 'reviewed', 'addressed', 'archived'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status'
+      });
+    }
+
+    const feedback = await Feedback.findOneAndUpdate(
+      { feedbackId: req.params.feedbackId },
+      { 
+        status,
+        adminNotes,
+        updatedAt: new Date()
+      },
+      { new: true }
+    );
+
+    if (!feedback) {
+      return res.status(404).json({
+        success: false,
+        error: 'Feedback not found'
+      });
+    }
+
+    console.log(`✅ Feedback ${feedback.feedbackId} status updated to: ${status}`);
+
+    res.json({
+      success: true,
+      message: 'Feedback status updated',
+      feedback
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback update error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update feedback'
+    });
+  }
+});
+
+// Delete feedback
+app.delete('/api/feedback/:feedbackId', authenticateToken, async (req, res) => {
+  try {
+    const query = { feedbackId: req.params.feedbackId };
+
+    // Allow users to delete only their own feedback
+    if (!req.user.isAdmin) {
+      query.userId = req.user._id;
+    }
+
+    const feedback = await Feedback.findOneAndDelete(query);
+
+    if (!feedback) {
+      return res.status(404).json({
+        success: false,
+        error: 'Feedback not found or unauthorized'
+      });
+    }
+
+    console.log(`✅ Feedback ${feedback.feedbackId} deleted`);
+
+    res.json({
+      success: true,
+      message: 'Feedback deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Feedback deletion error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete feedback'
+    });
+  }
+});
+
+// ===== OTHER ROUTES =====
+
 app.get('/api/weather/:location', async (req, res) => {
     try {
         const weatherData = getMockEnvironmentalData();
@@ -1325,6 +1666,32 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
     }
 });
 
+// Debug endpoints
+app.get('/api/endpoints', (req, res) => {
+    const endpoints = [];
+    app._router.stack.forEach((middleware) => {
+        if (middleware.route) {
+            // routes registered directly on the app
+            const methods = Object.keys(middleware.route.methods).join(', ').toUpperCase();
+            endpoints.push(`${methods} ${middleware.route.path}`);
+        } else if (middleware.name === 'router') {
+            // router middleware 
+            middleware.handle.stack.forEach((handler) => {
+                if (handler.route) {
+                    const methods = Object.keys(handler.route.methods).join(', ').toUpperCase();
+                    endpoints.push(`${methods} ${handler.route.path}`);
+                }
+            });
+        }
+    });
+    
+    res.json({
+        success: true,
+        endpoints: endpoints.sort(),
+        feedbackEndpointExists: endpoints.some(e => e.includes('/api/feedback'))
+    });
+});
+
 // Serve the main HTML file
 app.get('/', (req, res) => {
     res.json({ 
@@ -1333,7 +1700,8 @@ app.get('/', (req, res) => {
         endpoints: {
             health: '/api/health',
             analyze: '/api/analyze',
-            auth: '/api/auth/*'
+            auth: '/api/auth/*',
+            feedback: '/api/feedback'
         }
     });
 });
@@ -1341,12 +1709,15 @@ app.get('/', (req, res) => {
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 404 handler
+// ===== 404 HANDLER - MUST BE LAST =====
 app.use('*', (req, res) => {
+    console.log(`❌ 404 - Route not found: ${req.method} ${req.originalUrl}`);
+    
     if (req.originalUrl.startsWith('/api/')) {
         res.status(404).json({ 
             success: false, 
             error: 'API endpoint not found',
+            requestedPath: req.originalUrl,
             availableEndpoints: [
                 'GET /api/health',
                 'POST /api/analyze',
@@ -1357,7 +1728,13 @@ app.use('*', (req, res) => {
                 'POST /api/auth/login',
                 'GET /api/auth/profile',
                 'PUT /api/auth/profile',
-                'GET /api/auth/history'
+                'GET /api/auth/history',
+                'POST /api/feedback',
+                'GET /api/feedback/history',
+                'GET /api/feedback/stats',
+                'GET /api/feedback/:id',
+                'PUT /api/feedback/:id/status',
+                'DELETE /api/feedback/:id'
             ]
         });
     } else {
@@ -1387,6 +1764,7 @@ app.listen(PORT, () => {
     console.log(`🌐 Frontend: http://localhost:${PORT}`);
     console.log(`🔌 API: http://localhost:${PORT}/api`);
     console.log(`🔐 Auth API: http://localhost:${PORT}/api/auth`);
+    console.log(`📝 Feedback API: http://localhost:${PORT}/api/feedback`);
     console.log(`📊 MongoDB: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
     console.log(`👁️ Google Vision: ${visionClient ? 'Available' : 'Mock Mode'}`);
     console.log(`📁 Uploads Directory: ${path.join(__dirname, 'uploads')}`);
@@ -1395,6 +1773,8 @@ app.listen(PORT, () => {
     console.log('   - Add JWT_SECRET to your .env file');
     console.log('   - Users can now register and login');
     console.log('   - Analysis history is saved for logged-in users');
-    console.log('   - Vision API results now displayed in frontend');
+    console.log('   - Vision API results displayed in frontend');
+    console.log('   - Feedback system is fully integrated');
+    console.log('   - CORS is configured for GitHub Pages');
     console.log('===============================================\n');
 });
