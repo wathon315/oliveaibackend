@@ -195,6 +195,102 @@ analysisSchema.index({ userId: 1 });
 analysisSchema.index({ createdAt: -1 });
 const Analysis = mongoose.model('Analysis', analysisSchema);
 
+// ===== FEEDBACK SCHEMA =====
+const feedbackSchema = new mongoose.Schema({
+  feedbackId: {
+    type: String,
+    required: true,
+    unique: true,
+    default: () => 'FB-' + Date.now().toString() + '-' + Math.random().toString(36).substr(2, 6)
+  },
+  
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  
+  name: {
+    type: String,
+    default: 'Anonymous',
+    trim: true,
+    maxlength: 100
+  },
+  
+  email: {
+    type: String,
+    lowercase: true,
+    trim: true,
+    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+  },
+  
+  rating: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 5
+  },
+  
+  category: {
+    type: String,
+    required: true,
+    enum: ['analysis-accuracy', 'user-experience', 'product-recommendations', 'technical-issues', 'feature-request', 'other']
+  },
+  
+  message: {
+    type: String,
+    required: true,
+    trim: true,
+    minlength: 10,
+    maxlength: 1000
+  },
+  
+  analysisId: {
+    type: String,
+    default: null
+  },
+  
+  status: {
+    type: String,
+    enum: ['pending', 'reviewed', 'addressed', 'archived'],
+    default: 'pending'
+  },
+  
+  adminNotes: {
+    type: String,
+    default: null
+  },
+  
+  userAgent: {
+    type: String,
+    default: null
+  },
+  
+  ipAddress: {
+    type: String,
+    default: null
+  },
+  
+  createdAt: { 
+    type: Date, 
+    default: Date.now 
+  },
+  
+  updatedAt: { 
+    type: Date, 
+    default: Date.now 
+  }
+});
+
+// Add indexes for better performance
+feedbackSchema.index({ userId: 1 });
+feedbackSchema.index({ category: 1 });
+feedbackSchema.index({ rating: 1 });
+feedbackSchema.index({ status: 1 });
+feedbackSchema.index({ createdAt: -1 });
+
+const Feedback = mongoose.model('Feedback', feedbackSchema);
+
 // ===== AUTH MIDDLEWARE =====
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -261,7 +357,7 @@ app.use(cors({
     origin: [
         'http://localhost:3000',
         'http://localhost:5173',
-        'https://wathon315.github.io',  
+        'https://wathon315.github.io/oliveai/',  
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
